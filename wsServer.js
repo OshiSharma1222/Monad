@@ -63,13 +63,16 @@ function createWsServer(port, state, analyzer) {
       }
     }
 
-    // ── 1. Send current round snapshot ───────────────────────────────────────
+    // ── 1. Send current round + game snapshot ────────────────────────────────
     safeSend({
-      type:        'ROUND_STATE',
-      roundId:     Number(state.currentRound),
-      timeLeft:    calcTimeLeft(state),
-      playerCount: state.playerCount,
-      pot:         ethers.formatEther(state.pot),
+      type:           'ROUND_STATE',
+      roundId:        Number(state.currentRound),
+      timeLeft:       calcTimeLeft(state),
+      playerCount:    state.playerCount,
+      pot:            ethers.formatEther(state.pot),
+      currentGame:    Number(state.currentGame ?? 1),
+      roundsInGame:   state.roundsInGame ?? 0,
+      accumulatedPot: ethers.formatEther(state.accumulatedPot ?? 0n),
     });
 
     // ── 2. Send current leaderboard if there are already players ─────────────
@@ -101,11 +104,14 @@ function createWsServer(port, state, analyzer) {
   // ─── TICK — every 1 second ────────────────────────────────────────────────────
 
   setInterval(() => {
-    if (wss.clients.size === 0) return; // no-op when nobody is connected
+    if (wss.clients.size === 0) return;
     broadcast({
-      type:     'TICK',
-      timeLeft: calcTimeLeft(state),
-      roundId:  Number(state.currentRound),
+      type:           'TICK',
+      timeLeft:       calcTimeLeft(state),
+      roundId:        Number(state.currentRound),
+      currentGame:    Number(state.currentGame ?? 1),
+      roundsInGame:   state.roundsInGame ?? 0,
+      accumulatedPot: ethers.formatEther(state.accumulatedPot ?? 0n),
     });
   }, 1_000);
 

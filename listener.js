@@ -47,12 +47,15 @@ function createListener(contract, state, wsServer, analyzer, startBlock) {
   const iface         = contract.interface;
   const contractAddr  = contract.target ?? contract.address;
 
-  // Build the combined topic list so one getLogs fetches all 4 events
+  // Build the combined topic list so one getLogs fetches all events
   const eventTopics = [
     iface.getEvent('RoundStarted').topicHash,
     iface.getEvent('MoveMade').topicHash,
     iface.getEvent('RoundSettled').topicHash,
     iface.getEvent('ScoreUpdated').topicHash,
+    iface.getEvent('RoundCompleted').topicHash,
+    iface.getEvent('GameStarted').topicHash,
+    iface.getEvent('GameSettled').topicHash,
   ];
 
   const seen          = new Set();
@@ -90,11 +93,14 @@ function createListener(contract, state, wsServer, analyzer, startBlock) {
     state.isSettling     = false;
 
     wsServer.broadcast({
-      type:        'ROUND_STATE',
-      roundId:     Number(roundId),
-      timeLeft:    30,
-      playerCount: 0,
-      pot:         '0.0',
+      type:           'ROUND_STATE',
+      roundId:        Number(roundId),
+      timeLeft:       30,
+      playerCount:    0,
+      pot:            '0.0',
+      currentGame:    Number(state.currentGame ?? 1),
+      roundsInGame:   state.roundsInGame ?? 0,
+      accumulatedPot: ethers.formatEther(state.accumulatedPot ?? 0n),
     });
   }
 
@@ -188,6 +194,53 @@ function createListener(contract, state, wsServer, analyzer, startBlock) {
     });
   }
 
+  function handleRoundCompleted(parsed, log) {
+    const gameId      = parsed.args[0];
+    const roundNumber = parsed.args[1];
+    const roundPot    = parsed.args[2];
+    state.roundsInGame = Number(roundNumber);
+    console.log(`[GAME ${gameId}] Round ${roundNumber}/5 complete | pot: ${ethers.formatEther(roundPot)} MON`);
+  }
+
+  function handleGameStarted(parsed, log) {
+    const gameId = parsed.args[0];
+    state.currentGame    = gameId;
+    state.roundsInGame   = 0;
+    state.accumulatedPot = 0n;
+    console.log(`\n[GAME ${gameId}] ══════════════ NEW GAME ══════════════`);
+    wsServer.broadcast({ type: 'GAME_STARTED', gameId: Number(gameId) });
+  }
+
+  function handleGameSettled(parsed, log) {
+    const gameId      = parsed.args[0];
+    const winner      = parsed.args[1];
+    const totalPot    = parsed.args[2];
+    const winnerScore = parsed.args[3];
+    const isReal      = winner !== ethers.ZeroAddress;
+
+    state.roundsInGame   = 0;
+    state.accumulatedPot = 0n;
+
+    if (isReal) {
+      analyzer.recordWin(winner, totalPot);
+      analyzer.recordRoundEnd(Number(gameId), totalPot);
+      console.log(`[GAME ${gameId}] ══════════════ GAME OVER ══════════════`);
+      console.log(`[GAME ${gameId}] Winner : ${shortAddr(winner)}`);
+      console.log(`[GAME ${gameId}] Prize  : ${ethers.formatEther(totalPot)} MON`);
+      console.log(`[GAME ${gameId}] Score  : ${Number(winnerScore)} pts`);
+    } else {
+      console.log(`[GAME ${gameId}] Game settled with no players`);
+    }
+
+    wsServer.broadcast({
+      type:        'GAME_SETTLED',
+      gameId:      Number(gameId),
+      winner:      isReal ? shortAddr(winner) : null,
+      totalPot:    ethers.formatEther(totalPot),
+      winnerScore: Number(winnerScore),
+    });
+  }
+
   function handleScoreUpdated(parsed, log) {
     const player   = parsed.args[0];
     const newScore = parsed.args[1];
@@ -232,10 +285,13 @@ function createListener(contract, state, wsServer, analyzer, startBlock) {
         try { parsed = iface.parseLog(log); } catch (_) { continue; }
 
         switch (parsed.name) {
-          case 'RoundStarted':  handleRoundStarted(parsed, log);       break;
-          case 'MoveMade':      await handleMoveMade(parsed, log);     break;
-          case 'RoundSettled':  handleRoundSettled(parsed, log);       break;
-          case 'ScoreUpdated':  handleScoreUpdated(parsed, log);       break;
+          case 'RoundStarted':   handleRoundStarted(parsed, log);       break;
+          case 'MoveMade':       await handleMoveMade(parsed, log);     break;
+          case 'RoundSettled':   handleRoundSettled(parsed, log);       break;
+          case 'ScoreUpdated':   handleScoreUpdated(parsed, log);       break;
+          case 'RoundCompleted': handleRoundCompleted(parsed, log);     break;
+          case 'GameStarted':    handleGameStarted(parsed, log);        break;
+          case 'GameSettled':    handleGameSettled(parsed, log);        break;
         }
       }
     } catch (err) {

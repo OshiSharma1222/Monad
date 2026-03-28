@@ -97,19 +97,25 @@ async function bootstrap() {
     console.warn(`[WARN] Expected chain ${chainId} but got ${network.chainId} — proceeding anyway`);
   }
 
-  // ── Hydrate initial round state from chain ────────────────────────────────────
-  const roundId = await contract.currentRound();
-  const info    = await contract.getRoundInfo(roundId);
+  // ── Hydrate initial state from chain ─────────────────────────────────────────
+  const roundId      = await contract.currentRound();
+  const info         = await contract.getRoundInfo(roundId);
+  const gameId       = await contract.currentGame();
+  const roundsInGame = await contract.roundsInGame();
+  const accumPot     = await contract.getAccumulatedPot();
 
-  /** @type {{ currentRound: bigint, roundStartTime: bigint, pot: bigint, playerCount: number, settled: boolean, leaderboard: object[], isSettling: boolean }} */
   const state = {
-    currentRound:  roundId,
-    roundStartTime: info[0],   // startTime as bigint
-    pot:            info[1],   // pot in wei as bigint
+    currentRound:   roundId,
+    roundStartTime: info[0],
+    pot:            info[1],
     playerCount:    Number(info[2]),
-    settled:        info[3],   // bool
+    settled:        info[3],
     leaderboard:    [],
     isSettling:     false,
+    // Game state
+    currentGame:    gameId,
+    roundsInGame:   Number(roundsInGame),
+    accumulatedPot: accumPot,
   };
 
   // ── Hydrate leaderboard for the current round (if it has players) ─────────────
@@ -152,6 +158,7 @@ async function bootstrap() {
   console.log(`  Contract  : ${process.env.CONTRACT_ADDRESS}`);
   console.log(`  Settler   : ${signer.address}  (${balanceMON} MON)`);
   console.log(`  WS port   : ${wsPort}`);
+  console.log(`  Game      : #${gameId}  Round ${state.roundsInGame}/5`);
   console.log(`  Round     : #${roundId}  (${state.playerCount} players, pot: ${ethers.formatEther(state.pot)} MON)`);
   console.log('──────────────────────────────────────────────────\n');
 
