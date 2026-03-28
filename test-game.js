@@ -51,14 +51,13 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function waitForFreshRound(contract, minSeconds = 20n) {
   while (true) {
     try {
-      const [timeLeft, roundId, gameId, roundsIn, roundsLeft] = await Promise.all([
-        contract.timeLeft(),
-        contract.currentRound(),
-        contract.currentGame(),
-        contract.roundsInGame(),
-        contract.getRoundsLeft(),
-      ]);
-      const info = await contract.getRoundInfo(roundId);
+      // Sequential calls — avoid burst that triggers QuickNode rate limiter
+      const roundId   = await contract.currentRound();  await sleep(400);
+      const timeLeft  = await contract.timeLeft();       await sleep(400);
+      const gameId    = await contract.currentGame();    await sleep(400);
+      const roundsLeft = await contract.getRoundsLeft(); await sleep(400);
+      const info      = await contract.getRoundInfo(roundId);
+
       console.log(
         `  Round #${roundId} | Game #${gameId} | Round ${5 - Number(roundsLeft) + 1}/5 | ` +
         `timeLeft: ${timeLeft}s | settled: ${info[3]}`
@@ -73,7 +72,7 @@ async function waitForFreshRound(contract, minSeconds = 20n) {
     } catch (err) {
       console.log(`    ⏳ RPC error — retrying... (${err.shortMessage ?? err.message})`);
     }
-    await sleep(5_000);
+    await sleep(6_000);
   }
 }
 
@@ -155,7 +154,7 @@ async function main() {
           }
         }
       }
-      await sleep(3_000); // 3s gap between each player to avoid rate limits
+      await sleep(5_000); // 5s gap between each player to avoid rate limits
     }
 
     const pot = await contract.getAccumulatedPot();
@@ -166,7 +165,7 @@ async function main() {
       // Wait until roundsInGame increases (backend settled)
       const prevRoundsIn = 5 - Number(roundsLeft);
       while (true) {
-        await sleep(6_000);
+        await sleep(10_000); // wait 10s between checks to stay under rate limit
         try {
           const newRoundsIn = Number(await contract.roundsInGame());
           if (newRoundsIn > prevRoundsIn || newRoundsIn === 0) break;
