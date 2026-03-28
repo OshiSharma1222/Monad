@@ -1,0 +1,17 @@
+# Environment files — NEVER commit these
+.env
+.env.local
+hardhat/.env
+
+# Dependencies
+node_modules/
+hardhat/node_modules/
+
+# Hardhat build artifacts
+hardhat/artifacts/
+hardhat/cache/
+hardhat/typechain-types/
+
+# Logs
+*.log
+npm-debug.log*
