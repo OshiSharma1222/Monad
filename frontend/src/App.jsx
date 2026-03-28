@@ -84,7 +84,9 @@ export default function App() {
         break
       }
       case 'MOVE_MADE':
-        setPlayerCount(prev => Math.max(prev ?? 0, 1))
+        if (msg.playerCount != null) setPlayerCount(msg.playerCount)
+        else setPlayerCount(prev => Math.max(prev ?? 0, 1))
+        if (msg.accumulatedPot) setAccumulatedPot(msg.accumulatedPot)
         break
       case 'LEADERBOARD':
         setLeaderboard(msg.players ?? [])

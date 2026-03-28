@@ -114,9 +114,13 @@ function createListener(contract, state, wsServer, analyzer, startBlock) {
     const scoreNum  = Number(score);
 
     try {
-      const info        = await contract.getRoundInfo(roundId);
-      state.pot         = info[1];
-      state.playerCount = Number(info[2]);
+      const [info, accumPot] = await Promise.all([
+        contract.getRoundInfo(roundId),
+        contract.getAccumulatedPot(),
+      ]);
+      state.pot            = info[1];
+      state.playerCount    = Number(info[2]);
+      state.accumulatedPot = accumPot;
     } catch (_) {}
 
     analyzer.recordMove(player, scoreNum, choiceNum);
@@ -135,12 +139,14 @@ function createListener(contract, state, wsServer, analyzer, startBlock) {
     }
 
     wsServer.broadcast({
-      type:      'MOVE_MADE',
-      roundId:   Number(roundId),
-      player:    shortAddr(player),
-      choice:    choiceNum,
-      score:     scoreNum,
-      timestamp: Date.now(),
+      type:           'MOVE_MADE',
+      roundId:        Number(roundId),
+      player:         shortAddr(player),
+      choice:         choiceNum,
+      score:          scoreNum,
+      playerCount:    state.playerCount,
+      accumulatedPot: ethers.formatEther(state.accumulatedPot ?? 0n),
+      timestamp:      Date.now(),
     });
 
     wsServer.broadcast({
