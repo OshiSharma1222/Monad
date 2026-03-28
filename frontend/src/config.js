@@ -1,5 +1,5 @@
 export const WS_URL           = 'ws://localhost:8080'
-export const CONTRACT_ADDRESS = '0x448b7b91620e0C8c94E730b577C7b07322c57d87'
+export const CONTRACT_ADDRESS = '0x56B4250C3BF38d2d8729a00F66BF72ec3Dd17668'
 export const CHAIN_ID         = 10143
 export const STAKE_ETH        = '0.001'
 export const GAS_LIMIT        = 300000n
