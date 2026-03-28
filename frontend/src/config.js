@@ -1,4 +1,4 @@
-export const WS_URL           = 'ws://localhost:8080'
+export const WS_URL           = 'wss://mimicwar.onrender.com'
 export const CONTRACT_ADDRESS = '0x0F98eCD19B26fDF1cCC1b939406A24Ca992Fd98E'
 export const CHAIN_ID         = 10143
 export const STAKE_ETH        = '0.001'
