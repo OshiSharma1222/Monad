@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 
 export default function JoinScreen({
   timeLeft,
@@ -14,13 +14,15 @@ export default function JoinScreen({
   const [choice,   setChoice]   = useState(50)
   const [loading,  setLoading]  = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
+  const submitting = useRef(false)
 
   const roundReady = timeLeft !== null && timeLeft !== undefined
   const roundLive  = roundReady && timeLeft > 0
   const roundNum   = roundsInGame + 1  // current round (1-5)
 
   const handleSubmit = async () => {
-    if (!wallet || submitted || loading || !roundLive) return
+    if (!wallet || submitted || loading || !roundLive || submitting.current) return
+    submitting.current = true
     setLoading(true)
     setErrorMsg('')
     try {
@@ -37,6 +39,7 @@ export default function JoinScreen({
       else setErrorMsg(reason.slice(0, 140) || 'Transaction failed.')
     } finally {
       setLoading(false)
+      submitting.current = false
     }
   }
 
