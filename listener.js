@@ -186,6 +186,17 @@ function createListener(contract, state, wsServer, analyzer, startBlock) {
       }
     });
 
+    // Swallow transient RPC errors (rate limits, network blips) so the
+    // process keeps running and picks up events on the next poll cycle.
+    contract.on('error', (err) => {
+      const msg = err?.shortMessage ?? err?.message ?? String(err);
+      if (msg.includes('request limit') || msg.includes('rate limit') || msg.includes('coalesce')) {
+        console.warn('[LISTENER] RPC rate limit — will retry on next poll...');
+      } else {
+        console.error('[LISTENER] Contract event error:', msg);
+      }
+    });
+
     console.log(`[LISTENER] Subscribed from block ${startBlock} — RoundStarted | MoveMade | RoundSettled | ScoreUpdated`);
   }
 

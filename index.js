@@ -67,7 +67,7 @@ async function bootstrap() {
   const provider = new ethers.JsonRpcProvider(
     rpcUrl,
     { chainId, name: 'monad-testnet' },
-    { polling: true, pollingInterval: 5_000 },
+    { polling: true, pollingInterval: 10_000 },
   );
 
   // ── Signer (settler wallet) ───────────────────────────────────────────────────
@@ -164,4 +164,14 @@ async function bootstrap() {
 bootstrap().catch((err) => {
   console.error('[FATAL] Bootstrap failed:', err);
   process.exit(1);
+});
+
+// Prevent rate-limit / transient RPC errors from crashing the process
+process.on('unhandledRejection', (reason) => {
+  const msg = reason?.shortMessage ?? reason?.message ?? String(reason);
+  if (msg.includes('request limit') || msg.includes('rate limit') || msg.includes('coalesce')) {
+    console.warn('[RPC] Rate limit hit — waiting for next poll cycle...');
+    return;
+  }
+  console.error('[UNHANDLED REJECTION]', msg);
 });
