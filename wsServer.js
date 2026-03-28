@@ -12,6 +12,7 @@
  *   TICK          — every second with countdown
  */
 
+const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
 const { ethers } = require('ethers');
 
@@ -35,7 +36,16 @@ function calcTimeLeft(state) {
  * @returns {{ broadcast: (data: object) => void }}
  */
 function createWsServer(port, state, analyzer) {
-  const wss = new WebSocketServer({ port });
+  // HTTP server — Render health checks hit GET / and need a 200 OK
+  const httpServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('MimicWar backend OK');
+  });
+
+  const wss = new WebSocketServer({ server: httpServer });
+  httpServer.listen(port, () => {
+    console.log(`[WS] Server ready → ws://localhost:${port}`);
+  });
 
   // ─── Broadcast helper ─────────────────────────────────────────────────────────
 
@@ -95,10 +105,6 @@ function createWsServer(port, state, analyzer) {
 
   wss.on('error', (err) => {
     console.error(`[WS] Server error: ${err.message}`);
-  });
-
-  wss.on('listening', () => {
-    console.log(`[WS] Server ready → ws://localhost:${port}`);
   });
 
   // ─── TICK — every 1 second ────────────────────────────────────────────────────
