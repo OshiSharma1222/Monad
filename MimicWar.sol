@@ -135,6 +135,7 @@ contract MimicWar {
         round.settled = true;
         round.winner  = winner;
 
+
         // Reset per-round submission flags for all participants
         for (uint256 i = 0; i < count; ) {
             fingerprints[players[i]].hasSubmitted = false;
