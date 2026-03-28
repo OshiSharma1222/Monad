@@ -1,111 +1,104 @@
 'use strict';
 
-/**
- * roundManager.js
- * Polls timeLeft() every 5 seconds. When it returns 0 and the round has
- * not yet been settled on-chain, sends a settleRound() transaction.
- *
- * Uses a signer wallet funded with MON to pay for gas.
- */
+const POLL_INTERVAL_MS = 8_000;   // poll every 8s
+const RETRY_DELAY_MS   = 6_000;   // wait 6s before retrying after a rate-limit error
 
-const POLL_INTERVAL_MS = 5_000; // 5 seconds
-
-/**
- * @param {import('ethers').Contract} contract        read-only (provider)
- * @param {import('ethers').Contract} signerContract  write (signer)
- * @param {object}                    state            shared mutable state
- */
 function createRoundManager(contract, signerContract, state) {
-  let timer      = null;
-  let lastAttemptRound = -1n; // prevent double-settling same round
+  let timer           = null;
+  let settling        = false;    // hard mutex — only one attempt at a time
+  let settledRound    = -1n;      // don't retry a round that sent successfully
+
+  async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   async function checkAndSettle() {
-    // Skip if we are mid-settlement already
-    if (state.isSettling) return;
+    if (settling) return;
 
     try {
       const timeLeft = await contract.timeLeft();
+      if (timeLeft > 0n) return;           // round still running
+      if (state.settled) return;           // already settled locally
 
-      if (timeLeft > 0n) {
-        // Round still active — nothing to do
-        return;
+      // On-chain double-check
+      const info           = await contract.getRoundInfo(state.currentRound);
+      const onChainSettled = info[3];
+      if (onChainSettled) { state.settled = true; return; }
+
+      // Don't retry a round we already sent a tx for
+      if (state.currentRound === settledRound) return;
+
+      const players = Number(info[2]);
+      if (players === 0) console.log(`[ROUND MANAGER] Round ${state.currentRound} — 0 players, settling to advance...`);
+
+      settling = true;
+      console.log(`[ROUND MANAGER] Settling round ${state.currentRound}...`);
+
+      let tx;
+      // Retry the send up to 3 times on rate-limit errors
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          tx = await signerContract.settleRound({ gasLimit: 1_000_000n });
+          break;
+        } catch (sendErr) {
+          const m = sendErr.shortMessage ?? sendErr.message ?? '';
+          if ((m.includes('coalesce') || m.includes('rate limit') || m.includes('limit reached')) && attempt < 3) {
+            console.warn(`[ROUND MANAGER] Rate limited on send (attempt ${attempt}) — retrying in ${RETRY_DELAY_MS / 1000}s...`);
+            await sleep(RETRY_DELAY_MS);
+          } else {
+            throw sendErr;
+          }
+        }
       }
 
-      // Time is up — check whether it has already been settled
-      if (state.settled) return;
+      // Mark round as attempted AFTER successful send
+      settledRound = state.currentRound;
+      console.log(`[ROUND MANAGER] tx → ${tx.hash}`);
 
-      // Guard against re-trying the same round on consecutive polls
-      if (state.currentRound === lastAttemptRound) return;
-
-      // Double-check on-chain to avoid sending a doomed tx
-      const info = await contract.getRoundInfo(state.currentRound);
-      const onChainSettled  = info[3];   // bool settled
-      const onChainPlayers  = info[2];   // uint256 playerCount
-
-      if (onChainSettled) {
-        state.settled = true;
-        return;
+      // Poll for receipt manually (avoids ethers internal poller)
+      let receipt = null;
+      for (let i = 0; i < 20; i++) {
+        await sleep(3_000);
+        try {
+          receipt = await contract.runner.provider.getTransactionReceipt(tx.hash);
+          if (receipt) break;
+        } catch (_) {}
       }
 
-      if (onChainPlayers === 0n || Number(onChainPlayers) === 0) {
-        console.log(`[ROUND MANAGER] Round ${state.currentRound} has 0 players — settling to advance to next round...`);
+      if (receipt) {
+        console.log(`[ROUND MANAGER] Confirmed in block ${receipt.blockNumber} | gas: ${receipt.gasUsed.toLocaleString()}`);
+      } else {
+        console.warn(`[ROUND MANAGER] Receipt not found after 60s — listener will catch the event`);
       }
-
-      // ── Fire the settlement transaction ──────────────────────────────────────
-      state.isSettling    = true;
-      lastAttemptRound    = state.currentRound;
-
-      console.log(`[ROUND MANAGER] Round ${state.currentRound} has expired — sending settleRound()...`);
-
-      const tx = await signerContract.settleRound({ gasLimit: 1_000_000n });
-      console.log(`[ROUND MANAGER] tx submitted → ${tx.hash}`);
-
-      const receipt = await tx.wait();
-      console.log(
-        `[ROUND MANAGER] Confirmed in block ${receipt.blockNumber}` +
-        `  |  gas used: ${receipt.gasUsed.toLocaleString()}`
-      );
 
     } catch (err) {
-      state.isSettling = false;
-
       const msg = err.shortMessage ?? err.message ?? String(err);
 
       if (msg.includes('RoundAlreadySettled')) {
-        console.log(`[ROUND MANAGER] Round ${state.currentRound} already settled (race condition) — OK`);
         state.settled = true;
-        return;
-      }
-
-      if (msg.includes('RoundStillActive')) {
-        // Chain disagrees — our local clock was wrong; ignore
-        return;
-      }
-
-      if (msg.includes('NoPlayersThisRound')) {
-        console.warn(`[ROUND MANAGER] No players — skipping settlement for round ${state.currentRound}`);
+        settledRound  = state.currentRound;
+        console.log(`[ROUND MANAGER] Round ${state.currentRound} already settled — OK`);
+      } else if (msg.includes('RoundStillActive')) {
+        // chain clock ahead of us — ignore
+      } else if (msg.includes('NoPlayersThisRound')) {
         state.settled = true;
-        return;
+        settledRound  = state.currentRound;
+        console.warn(`[ROUND MANAGER] No players this round — advancing`);
+      } else {
+        console.error(`[ROUND MANAGER] Settlement error: ${msg.slice(0, 120)}`);
       }
-
-      // Unexpected error — log it and let the next poll retry
-      console.error(`[ROUND MANAGER] Error during settlement: ${msg}`);
+    } finally {
+      settling = false;
     }
   }
 
   function start() {
-    console.log(`[ROUND MANAGER] Started — polling timeLeft() every ${POLL_INTERVAL_MS / 1_000}s`);
-    // Immediate first check, then interval
+    console.log(`[ROUND MANAGER] Started — polling every ${POLL_INTERVAL_MS / 1_000}s`);
     checkAndSettle();
     timer = setInterval(checkAndSettle, POLL_INTERVAL_MS);
   }
 
   function stop() {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-      console.log('[ROUND MANAGER] Stopped');
-    }
+    if (timer) { clearInterval(timer); timer = null; }
+    console.log('[ROUND MANAGER] Stopped');
   }
 
   return { start, stop };
