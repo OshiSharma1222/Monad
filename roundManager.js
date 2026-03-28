@@ -48,12 +48,7 @@ function createRoundManager(contract, signerContract, state) {
       }
 
       if (onChainPlayers === 0n || Number(onChainPlayers) === 0) {
-        console.warn(
-          `[ROUND MANAGER] Round ${state.currentRound} ended with 0 players — settlement skipped`
-        );
-        // Mark as settled locally so we stop retrying
-        state.settled = true;
-        return;
+        console.log(`[ROUND MANAGER] Round ${state.currentRound} has 0 players — settling to advance to next round...`);
       }
 
       // ── Fire the settlement transaction ──────────────────────────────────────

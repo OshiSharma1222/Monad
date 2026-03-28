@@ -2,29 +2,20 @@
 
 /**
  * listener.js
- * Subscribes to all MimicWar contract events and:
- *   - updates shared in-memory state
- *   - feeds the analyzer
- *   - triggers WebSocket broadcasts
+ * Subscribes to all MimicWar contract events.
+ *
+ * Two guards prevent duplicate processing:
+ *   1. startBlock — ignore any event from a block before we started
+ *   2. seen Set   — deduplicate by txHash+logIndex (ethers polling can
+ *                   re-deliver the same log on consecutive poll cycles)
  */
 
 const { ethers } = require('ethers');
 
-/** Shorten 0x… address to 0x1234…5678 */
 function shortAddr(addr) {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
-/**
- * Upsert a player entry in the leaderboard array and re-sort by score descending.
- * Mutates state.leaderboard in place.
- *
- * @param {object[]} leaderboard  state.leaderboard
- * @param {string}   address
- * @param {number}   score
- * @param {number}   choice
- * @param {number}   moveCount
- */
 function upsertLeaderboard(leaderboard, address, score, choice, moveCount) {
   const key      = address.toLowerCase();
   const existing = leaderboard.find(p => p.address.toLowerCase() === key);
@@ -39,25 +30,50 @@ function upsertLeaderboard(leaderboard, address, score, choice, moveCount) {
 }
 
 /**
- * @param {import('ethers').Contract} contract     read-only provider contract
- * @param {object}                    state         shared mutable state
+ * @param {import('ethers').Contract} contract
+ * @param {object}                    state
  * @param {{ broadcast: Function }}   wsServer
  * @param {object}                    analyzer
+ * @param {number}                    startBlock  — only process logs >= this block
  */
-function createListener(contract, state, wsServer, analyzer) {
+function createListener(contract, state, wsServer, analyzer, startBlock) {
+  // Deduplication: txHash-logIndex → true
+  const seen = new Set();
+
+  function isDup(event) {
+    // event is a ContractEventPayload in ethers v6; event.log has blockNumber etc.
+    const log = event?.log ?? event;
+    if (!log?.transactionHash) return false; // can't check — let through
+
+    // Block-gate: skip events from before we started
+    if (log.blockNumber !== undefined && log.blockNumber < startBlock) return true;
+
+    const key = `${log.transactionHash}-${log.index ?? log.logIndex ?? 0}`;
+    if (seen.has(key)) return true;
+    seen.add(key);
+    // Keep the set from growing unbounded
+    if (seen.size > 2_000) {
+      const first = seen.values().next().value;
+      seen.delete(first);
+    }
+    return false;
+  }
+
   function start() {
-    // ── RoundStarted(uint256 indexed roundId, uint256 startTime) ──────────────
-    contract.on('RoundStarted', (roundId, startTime) => {
+    // ── RoundStarted ─────────────────────────────────────────────────────────
+    contract.on('RoundStarted', (roundId, startTime, event) => {
+      if (isDup(event)) return;
+
       console.log(`\n[ROUND ${roundId}] ═══════════════ NEW ROUND ═══════════════`);
       console.log(`[ROUND ${roundId}] Started at ${new Date(Number(startTime) * 1000).toISOString()}`);
 
-      state.currentRound    = roundId;
-      state.roundStartTime  = startTime;
-      state.pot             = 0n;
-      state.playerCount     = 0;
-      state.settled         = false;
-      state.leaderboard     = [];
-      state.isSettling      = false;
+      state.currentRound   = roundId;
+      state.roundStartTime = startTime;
+      state.pot            = 0n;
+      state.playerCount    = 0;
+      state.settled        = false;
+      state.leaderboard    = [];
+      state.isSettling     = false;
 
       wsServer.broadcast({
         type:        'ROUND_STATE',
@@ -68,28 +84,24 @@ function createListener(contract, state, wsServer, analyzer) {
       });
     });
 
-    // ── MoveMade(uint256 indexed roundId, address indexed player, uint8 choice, uint32 score) ──
-    contract.on('MoveMade', async (roundId, player, choice, score) => {
+    // ── MoveMade ─────────────────────────────────────────────────────────────
+    contract.on('MoveMade', async (roundId, player, choice, score, event) => {
+      if (isDup(event)) return;
+
       const choiceNum = Number(choice);
       const scoreNum  = Number(score);
 
-      // Refresh pot & player count from chain for accuracy
       try {
         const info       = await contract.getRoundInfo(roundId);
-        state.pot        = info[1]; // pot (bigint)
+        state.pot        = info[1];
         state.playerCount = Number(info[2]);
-      } catch (_) {
-        // Non-fatal: carry on with stale values
-      }
+      } catch (_) {}
 
-      // Feed the analyzer (increments totalMoves for this player)
       analyzer.recordMove(player, scoreNum, choiceNum);
 
-      // Rebuild leaderboard entry
       const moveCount = analyzer.getMoveCount(player);
       upsertLeaderboard(state.leaderboard, player, scoreNum, choiceNum, moveCount);
 
-      // Terminal output
       const potFormatted = ethers.formatEther(state.pot);
       console.log(
         `[ROUND ${roundId}] Player ${shortAddr(player)} submitted ${choiceNum} → score: ${scoreNum}` +
@@ -101,7 +113,6 @@ function createListener(contract, state, wsServer, analyzer) {
         console.log(`[ROUND ${roundId}] 🏆 New leader: ${shortAddr(leader.address)} (${leader.score} pts)`);
       }
 
-      // Broadcast: move event
       wsServer.broadcast({
         type:      'MOVE_MADE',
         roundId:   Number(roundId),
@@ -111,7 +122,6 @@ function createListener(contract, state, wsServer, analyzer) {
         timestamp: Date.now(),
       });
 
-      // Broadcast: full sorted leaderboard
       wsServer.broadcast({
         type:    'LEADERBOARD',
         roundId: Number(roundId),
@@ -124,52 +134,59 @@ function createListener(contract, state, wsServer, analyzer) {
       });
     });
 
-    // ── RoundSettled(uint256 indexed roundId, address indexed winner, uint256 prize, uint32 winnerScore) ──
-    contract.on('RoundSettled', (roundId, winner, prize, winnerScore) => {
+    // ── RoundSettled ─────────────────────────────────────────────────────────
+    contract.on('RoundSettled', (roundId, winner, prize, winnerScore, event) => {
+      if (isDup(event)) return;
+
       const prizeFormatted = ethers.formatEther(prize);
       const scoreNum       = Number(winnerScore);
+      const isReal         = winner !== ethers.ZeroAddress;
 
       state.settled    = true;
       state.isSettling = false;
 
-      // Update analyzer
-      analyzer.recordWin(winner, prize);
-      analyzer.recordRoundEnd(Number(roundId), prize);
+      if (isReal) {
+        analyzer.recordWin(winner, prize);
+        analyzer.recordRoundEnd(Number(roundId), prize);
 
-      // Print war-room summary
-      console.log(`[ROUND ${roundId}] ══════════════ SETTLED ══════════════`);
-      console.log(`[ROUND ${roundId}] Winner : ${shortAddr(winner)}`);
-      console.log(`[ROUND ${roundId}] Prize  : ${prizeFormatted} MON`);
-      console.log(`[ROUND ${roundId}] Score  : ${scoreNum} pts`);
-      console.log(`[ROUND ${roundId}] Players: ${state.playerCount}`);
+        console.log(`[ROUND ${roundId}] ══════════════ SETTLED ══════════════`);
+        console.log(`[ROUND ${roundId}] Winner : ${shortAddr(winner)}`);
+        console.log(`[ROUND ${roundId}] Prize  : ${prizeFormatted} MON`);
+        console.log(`[ROUND ${roundId}] Score  : ${scoreNum} pts`);
+        console.log(`[ROUND ${roundId}] Players: ${state.playerCount}`);
+      } else {
+        console.log(`[ROUND ${roundId}] Settled (no players — advancing to next round)`);
+      }
 
-      const globalStats = analyzer.getGlobalStats();
-      console.log(`[GLOBAL] Total rounds: ${globalStats.totalRounds}  |  Players: ${globalStats.totalPlayers}  |  Volume: ${globalStats.totalVolumeMON} MON`);
-      console.log(`──────────────────────────────────────────────────\n`);
+      const g = analyzer.getGlobalStats();
+      if (isReal) {
+        console.log(`[GLOBAL] Total rounds: ${g.totalRounds}  |  Players: ${g.totalPlayers}  |  Volume: ${g.totalVolumeMON} MON`);
+        console.log(`──────────────────────────────────────────────────\n`);
+      }
 
       wsServer.broadcast({
         type:        'ROUND_SETTLED',
         roundId:     Number(roundId),
-        winner:      shortAddr(winner),
+        winner:      isReal ? shortAddr(winner) : null,
         prize:       prizeFormatted,
         winnerScore: scoreNum,
       });
     });
 
-    // ── ScoreUpdated(address indexed player, uint32 newScore, uint8 choice) ────
-    // Emitted alongside MoveMade — use it to keep leaderboard scores fresh.
-    contract.on('ScoreUpdated', (player, newScore, choice) => {
+    // ── ScoreUpdated ─────────────────────────────────────────────────────────
+    contract.on('ScoreUpdated', (player, newScore, choice, event) => {
+      if (isDup(event)) return;
+
       const key   = player.toLowerCase();
       const entry = state.leaderboard.find(p => p.address.toLowerCase() === key);
       if (entry) {
         entry.score  = Number(newScore);
         entry.choice = Number(choice);
-        // Re-sort after update
         state.leaderboard.sort((a, b) => b.score - a.score);
       }
     });
 
-    console.log('[LISTENER] Subscribed to: RoundStarted | MoveMade | RoundSettled | ScoreUpdated');
+    console.log(`[LISTENER] Subscribed from block ${startBlock} — RoundStarted | MoveMade | RoundSettled | ScoreUpdated`);
   }
 
   function stop() {

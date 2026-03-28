@@ -112,7 +112,14 @@ contract MimicWar {
         if (block.timestamp < round.startTime + ROUND_DURATION) revert RoundStillActive();
 
         address[] storage players = roundPlayers[roundId];
-        if (players.length == 0) revert NoPlayersThisRound();
+
+        // No players — mark settled and advance without paying anyone
+        if (players.length == 0) {
+            round.settled = true;
+            _startNewRound();
+            emit RoundSettled(roundId, address(0), 0, 0);
+            return;
+        }
 
         // ── Find winner (highest unpredictability score; first occurrence wins ties) ──
         address winner;

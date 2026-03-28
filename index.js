@@ -62,10 +62,13 @@ async function bootstrap() {
   const chainId = 10143; // Monad testnet
 
   // ── Provider (read-only) ──────────────────────────────────────────────────────
-  const provider = new ethers.JsonRpcProvider(rpcUrl, {
-    chainId,
-    name: 'monad-testnet',
-  });
+  // Monad testnet does not support eth_newFilter, so we force polling mode
+  // which uses eth_getLogs instead — fully supported by Monad.
+  const provider = new ethers.JsonRpcProvider(
+    rpcUrl,
+    { chainId, name: 'monad-testnet' },
+    { polling: true, pollingInterval: 2_000 },
+  );
 
   // ── Signer (settler wallet) ───────────────────────────────────────────────────
   const signer = new ethers.Wallet(process.env.SETTLER_PRIVATE_KEY, provider);
@@ -75,8 +78,9 @@ async function bootstrap() {
   const signerContract = new ethers.Contract(process.env.CONTRACT_ADDRESS, CONTRACT_ABI, signer);
 
   // ── Verify connectivity ───────────────────────────────────────────────────────
-  const network = await provider.getNetwork();
-  console.log(`[INIT] Connected to chain ID ${network.chainId}`);
+  const network      = await provider.getNetwork();
+  const startBlock   = await provider.getBlockNumber(); // only process events from here forward
+  console.log(`[INIT] Connected to chain ID ${network.chainId} at block ${startBlock}`);
 
   if (Number(network.chainId) !== chainId) {
     console.warn(`[WARN] Expected chain ${chainId} but got ${network.chainId} — proceeding anyway`);
@@ -125,7 +129,7 @@ async function bootstrap() {
   // ── Modules ───────────────────────────────────────────────────────────────────
   const analyzer    = createAnalyzer();
   const wsServer    = createWsServer(wsPort, state, analyzer);
-  const listener    = createListener(contract, state, wsServer, analyzer);
+  const listener    = createListener(contract, state, wsServer, analyzer, startBlock);
   const roundMgr    = createRoundManager(contract, signerContract, state);
 
   // ── Banner ────────────────────────────────────────────────────────────────────
