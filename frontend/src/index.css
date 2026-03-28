@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Global base ─────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: #080808;
+  color: #efefef;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Custom scrollbar ────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #080808;
+}
+::-webkit-scrollbar-thumb {
+  background: #1c1c1c;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2e2e2e;
+}
+
+/* ── Range slider — pseudo-elements (Tailwind can't do these) */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 1px;
+  background: #2e2e2e;
+  outline: none;
+  cursor: pointer;
+  border-radius: 0;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #efefef;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+input[type='range']::-webkit-slider-thumb:hover {
+  background: #e02020;
+  transform: scale(1.2);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #efefef;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+input[type='range']::-moz-range-thumb:hover {
+  background: #e02020;
+  transform: scale(1.2);
+}
+
+input[type='range']::-ms-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #efefef;
+  border: none;
+  cursor: pointer;
+}
+
+/* ── Row flash animation ─────────────────────────────────── */
+@keyframes rowFlash {
+  0%   { background-color: #061a0f; }
+  100% { background-color: transparent; }
+}
+
+.row-flash {
+  animation: rowFlash 1.4s ease-out forwards;
+}
