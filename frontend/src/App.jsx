@@ -10,10 +10,11 @@ import {
   CONTRACT_ABI,
 } from './config.js'
 
-import Header     from './components/Header.jsx'
-import JoinScreen from './screens/JoinScreen.jsx'
-import WarScreen  from './screens/WarScreen.jsx'
-import EndScreen  from './screens/EndScreen.jsx'
+import Header      from './components/Header.jsx'
+import WalletModal from './components/WalletModal.jsx'
+import JoinScreen  from './screens/JoinScreen.jsx'
+import WarScreen   from './screens/WarScreen.jsx'
+import EndScreen   from './screens/EndScreen.jsx'
 
 /* ── Utility ── */
 function shortAddr(addr) {
@@ -27,9 +28,11 @@ export default function App() {
   const [screen, setScreen] = useState('join') // 'join' | 'war' | 'end'
 
   /* Wallet */
-  const [wallet,   setWallet]   = useState(null)
-  const [signer,   setSigner]   = useState(null)
-  const [contract, setContract] = useState(null)
+  const [wallet,           setWallet]           = useState(null)
+  const [signer,           setSigner]           = useState(null)
+  const [contract,         setContract]         = useState(null)
+  const [walletModal,      setWalletModal]      = useState(false)
+  const [availableWallets, setAvailableWallets] = useState([])
 
   /* Round data */
   const [roundId,     setRoundId]     = useState(null)
@@ -117,27 +120,69 @@ export default function App() {
     }
   }, [wsConnect])
 
-  /* ── Connect Wallet ─────────────────────────────────────── */
-  const connectWallet = useCallback(async () => {
-    if (!window.ethereum) {
-      alert('MetaMask not detected. Install it from metamask.io')
-      return
+  /* ── Wallet discovery (EIP-6963 + legacy fallback) ──────── */
+  function getWalletName(p) {
+    if (p?.isMetaMask && !p?.isCoinbaseWallet) return 'MetaMask'
+    if (p?.isCoinbaseWallet)                   return 'Coinbase Wallet'
+    if (p?.isRabby)                            return 'Rabby'
+    if (p?.isTrust || p?.isTrustWallet)        return 'Trust Wallet'
+    if (p?.isPhantom)                          return 'Phantom'
+    if (p?.isBraveWallet)                      return 'Brave Wallet'
+    if (p?.isOkxWallet || p?.isOKExWallet)     return 'OKX Wallet'
+    if (p?.isBybit)                            return 'Bybit Wallet'
+    return 'Browser Wallet'
+  }
+
+  async function discoverWallets() {
+    const found = []
+
+    // 1. EIP-6963 — modern standard, works with all major wallets
+    const handler = (e) => { if (e.detail) found.push(e.detail) }
+    window.addEventListener('eip6963:announceProvider', handler)
+    window.dispatchEvent(new Event('eip6963:requestProvider'))
+    await new Promise(r => setTimeout(r, 150))   // wait for announcements
+    window.removeEventListener('eip6963:announceProvider', handler)
+
+    if (found.length > 0) return found
+
+    // 2. Legacy: multiple wallets in window.ethereum.providers[]
+    if (window.ethereum?.providers?.length) {
+      return window.ethereum.providers.map((p, i) => ({
+        info:     { name: getWalletName(p), uuid: String(i), rdns: '', icon: '' },
+        provider: p,
+      }))
     }
+
+    // 3. Legacy: single window.ethereum
+    if (window.ethereum) {
+      return [{
+        info:     { name: getWalletName(window.ethereum), uuid: 'default', rdns: '', icon: '' },
+        provider: window.ethereum,
+      }]
+    }
+
+    return []
+  }
+
+  /* ── Connect to a specific wallet ────────────────────────── */
+  const connectToWallet = useCallback(async (walletEntry) => {
+    setWalletModal(false)
+    const raw = walletEntry.provider
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum)
+      const provider = new ethers.BrowserProvider(raw)
       await provider.send('eth_requestAccounts', [])
 
       // Switch / add Monad testnet
       const net = await provider.getNetwork()
       if (Number(net.chainId) !== CHAIN_ID) {
         try {
-          await window.ethereum.request({
+          await raw.request({
             method: 'wallet_switchEthereumChain',
             params: [{ chainId: '0x' + CHAIN_ID.toString(16) }],
           })
         } catch (err) {
           if (err.code === 4902) {
-            await window.ethereum.request({
+            await raw.request({
               method: 'wallet_addEthereumChain',
               params: [{
                 chainId:        '0x' + CHAIN_ID.toString(16),
@@ -146,16 +191,14 @@ export default function App() {
                 nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
               }],
             })
-          } else {
-            throw err
-          }
+          } else throw err
         }
       }
 
-      const freshProvider = new ethers.BrowserProvider(window.ethereum)
-      const s             = await freshProvider.getSigner()
-      const addr          = await s.getAddress()
-      const c             = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, s)
+      const fresh = new ethers.BrowserProvider(raw)
+      const s     = await fresh.getSigner()
+      const addr  = await s.getAddress()
+      const c     = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, s)
 
       setSigner(s)
       setWallet(addr)
@@ -164,6 +207,23 @@ export default function App() {
       alert('Connect failed: ' + (err?.shortMessage ?? err?.message ?? 'Unknown error'))
     }
   }, [])
+
+  /* ── Connect Wallet (entry point) ────────────────────────── */
+  const connectWallet = useCallback(async () => {
+    const wallets = await discoverWallets()
+
+    if (wallets.length === 0) {
+      alert('No EVM wallet detected.\n\nInstall MetaMask, Coinbase Wallet, Rabby, or any EVM-compatible wallet.')
+      return
+    }
+
+    if (wallets.length === 1) {
+      await connectToWallet(wallets[0])   // only one wallet — connect directly
+    } else {
+      setAvailableWallets(wallets)        // multiple wallets — show picker
+      setWalletModal(true)
+    }
+  }, [connectToWallet])
 
   /* ── Submit Move ────────────────────────────────────────── */
   const submitMove = useCallback(async (choice) => {
@@ -198,6 +258,14 @@ export default function App() {
   /* ── Render ─────────────────────────────────────────────── */
   return (
     <div className="flex flex-col min-h-screen bg-bg text-primary font-sans">
+
+      {walletModal && (
+        <WalletModal
+          wallets={availableWallets}
+          onSelect={connectToWallet}
+          onClose={() => setWalletModal(false)}
+        />
+      )}
 
       <Header
         roundId={roundId}
