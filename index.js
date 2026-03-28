@@ -67,7 +67,7 @@ async function bootstrap() {
   const provider = new ethers.JsonRpcProvider(
     rpcUrl,
     { chainId, name: 'monad-testnet' },
-    { polling: true, pollingInterval: 2_000 },
+    { polling: true, pollingInterval: 5_000 },
   );
 
   // ── Signer (settler wallet) ───────────────────────────────────────────────────
